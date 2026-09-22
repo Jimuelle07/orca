@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
 import { MobileWebBundleRouteSchema } from '../../../src/shared/mobile-web-bundle/manifest-contract'
 import {
   matchesRoutePattern,
@@ -309,5 +310,122 @@ describe('the pairs a session publishes to the page', () => {
   it('copies the list, so nothing the shell keeps is reachable through the frame it hands out', () => {
     const routes = [{ pathname: '/h/[hostId]', grants: ['navigate'] }]
     expect(routeViewOf(routes, '/h/host-1').pageRouteGrants[0]?.grants).not.toBe(routes[0]?.grants)
+  })
+})
+
+/**
+ * The optional lane, read off one route (ruling 37).
+ *
+ * `screencastBinary` stands in for the capability under test: a real token this shell implements,
+ * so the cases below measure the lane and not whether a name is known.
+ */
+describe('a route that declares an optional grant', () => {
+  const pathname = '/h/[hostId]/session/[worktreeId]'
+  const opened = '/h/host-1/session/wt-1'
+  const declared = [
+    { pathname, grants: ['navigate', 'storage'], optionalGrants: ['screencastBinary'] }
+  ]
+
+  it('is served on its required list alone, which is what decides the route', () => {
+    expect(pageRoutesOf(declared)).toEqual([pathname])
+    // And the required lane still decides it: one required name this shell lacks takes it native
+    // however short the optional list is.
+    expect(pageRoutesOf([{ ...declared[0], grants: ['navigate', 'aGrantFromTheFuture'] }])).toEqual(
+      []
+    )
+  })
+
+  it('grants the optional name as well, so the page can read it off its own init', () => {
+    expect(grantsForRoute(declared, opened)).toEqual(['navigate', 'storage', 'screencastBinary'])
+  })
+
+  it('drops an optional name this shell does not implement, and serves the route anyway', () => {
+    const fromTheFuture = [
+      { pathname, grants: ['navigate', 'storage'], optionalGrants: ['aGrantFromTheFuture'] }
+    ]
+    expect(grantsForRoute(fromTheFuture, opened)).toEqual(['navigate', 'storage'])
+    // The difference from the required lane, in one place: unimplemented-and-optional is a hidden
+    // affordance, unimplemented-and-required is a native screen.
+    expect(pageRoutesOf(fromTheFuture)).toEqual([pathname])
+  })
+
+  /**
+   * One object for the measure and the measured.
+   *
+   * `routeGrants` is what the session is granted and each pair is what the page compares a hop
+   * against. Two spellings of "what this route gets" is how `route-handoff.web.ts` comes to keep a
+   * hop whose target then runs without the capability it asked for, so they are one computation and
+   * this is the case that says so.
+   */
+  it('publishes the same list to the page as it grants the session', () => {
+    const view = routeViewOf(declared, opened)
+    expect(view.pageRouteGrants).toEqual([{ pathname, grants: view.routeGrants }])
+    expect(view.routeGrants).toEqual(['navigate', 'storage', 'screencastBinary'])
+  })
+})
+
+/**
+ * Old shell, new manifest: the claim design B rests on, so it gets its own case.
+ *
+ * And the claim as the design stated it is false, which is why this is measured rather than
+ * asserted. The design and ruling 37 say the phone's loose reader "drops the unknown field"; it does
+ * not. `z.looseObject` passes unknown members through (measured on zod 4.4.3, and by the first case
+ * below), so a shell older than the field holds an entry that still carries it. What such a shell
+ * lacks is a policy that reads it -- so it serves the route on its required list and grants nothing
+ * extra, which is the conclusion the design wanted.
+ *
+ * The part that does not survive is the publish: an entry carrying the field reaches the strict pair
+ * schema and refuses the whole session, not one field. So what makes design B safe against a shell
+ * is that shell publishing built pairs rather than forwarded entries -- ruling 37.4's fix is the
+ * compatibility argument, not a tidy-up before it.
+ *
+ * `installedShellPolicy` is the policy half of an older shell, written as the read it makes.
+ */
+describe('a shell whose policy has never heard of the optional lane', () => {
+  const pathname = '/h/[hostId]/session/[worktreeId]'
+  const opened = '/h/host-1/session/wt-1'
+  const loose = z.array(
+    z.looseObject({
+      pathname: z.string().min(1).max(255),
+      grants: z.array(z.string().min(1).max(64))
+    })
+  )
+  const written = [
+    { pathname, grants: ['navigate', 'storage'], optionalGrants: ['screencastBinary'] }
+  ]
+  /** The older shell's reading of a route: its required list, narrowed, and no second lane. */
+  const installedShellPolicy = (route: { grants: readonly string[] }) =>
+    route.grants.filter((grant) => MOBILE_WEB_SHELL_GRANTS.some((known) => known === grant))
+
+  it('is handed a manifest that really does carry the field', () => {
+    // The presence precondition. Without it every arm below passes against a fixture that never had
+    // the key, which reads the same as a reader that removed it.
+    const parsed = MobileWebBundleRouteSchema.safeParse(written[0])
+    expect(parsed.success && parsed.data.optionalGrants).toEqual(['screencastBinary'])
+  })
+
+  it('still holds the field after its own reader, which passes unknown members through', () => {
+    const read = loose.parse(written)
+    expect(Object.hasOwn(read[0] ?? {}, 'optionalGrants')).toBe(true)
+  })
+
+  it('serves the route on its required list and grants nothing extra', () => {
+    const read = loose.parse(written)
+    expect(pageRoutesOf(read)).toEqual([pathname])
+    expect(installedShellPolicy(read[0] ?? { grants: [] })).toEqual(['navigate', 'storage'])
+  })
+
+  it('publishes pairs a strict schema takes, which is what keeps the session at all', () => {
+    // The half the design missed. Forwarded entries carry the field into
+    // `BridgePageRouteGrantsSchema`, which refuses them and takes the whole `init` with them;
+    // `bridge-host-init.test.ts` pins that end to end.
+    const pairs = routeViewOf(loose.parse(written), opened).pageRouteGrants
+    expect(BridgePageRouteGrantsSchema.safeParse(pairs).success).toBe(true)
+  })
+
+  it('is the only difference from this build, which reads the field and grants it', () => {
+    // The control: same manifest, this build's policy, one more grant. Without it the arms above
+    // are also what a policy that ignored the lane entirely would report.
+    expect(grantsForRoute(written, opened)).toEqual(['navigate', 'storage', 'screencastBinary'])
   })
 })

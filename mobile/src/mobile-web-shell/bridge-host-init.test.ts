@@ -120,6 +120,37 @@ describe('init and state', () => {
     ])
   })
 
+  /**
+   * One object for the measure and the measured, read off one `init`.
+   *
+   * `grants.native` is what this session may do and each pair is what the page compares a hop
+   * against (`route-handoff.web.ts`). Both come from `routeViewOf`, so the pair for the pattern the
+   * session was opened on must be the same list `grants.native` carries minus the protocol's own
+   * grant. Two computations here is how a hop is kept local whose target then runs without the
+   * capability it asked for.
+   */
+  it("grants a session exactly what it publishes as that pattern's pair", () => {
+    const declared = [
+      {
+        pathname: '/h/[hostId]',
+        grants: ['navigate', 'storage', 'haptics'],
+        optionalGrants: ['screencastBinary']
+      }
+    ]
+    const view = routeViewOf(declared, ROUTE.pathname)
+    const bridge = harness({ routeGrants: view.routeGrants, pageRouteGrants: view.pageRouteGrants })
+    bridge.host.receive(clientFrame({ type: 'ready' }))
+    const init = bridge.last()
+    if (init.type !== 'init') {
+      throw new Error('expected an init frame')
+    }
+    expect(init.grants.native).toEqual([BRIDGE_FAULT_GRANT, ...view.routeGrants])
+    const pair = (init.pageRouteGrants ?? []).find((entry) => entry.pathname === '/h/[hostId]')
+    expect(pair?.grants).toEqual(view.routeGrants)
+    // The optional name is in both, so the case is the lane and not two equal required lists.
+    expect(init.grants.native).toContain('screencastBinary')
+  })
+
   it('refuses a grant name the manifest grammar refuses, naming the field it came from', () => {
     // The host reads the manifest through the same grammar the desktop wrote it under, so a name
     // the bundle could not have declared cannot reach the page through this field either.
