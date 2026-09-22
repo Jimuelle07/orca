@@ -11,6 +11,8 @@ import {
   startOfLastNonBlankLines
 } from './terminal-wait-tail-window'
 
+export { isMuseReadyPromptPreview } from '../../shared/muse-ready-prompt'
+
 const EXPLICIT_IDLE_TITLE_RE = /(^|\s)(ready|idle|done)(\s|$|[.!?])/i
 const CLAUDE_IDLE_PREFIX = '\u2733'
 const GEMINI_IDLE_PREFIX = '\u25c7'

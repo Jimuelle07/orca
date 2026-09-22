@@ -506,3 +506,12 @@ describe('Antigravity readiness does not absorb its own startup dialog', () => {
     })
   }
 })
+
+describe('Muse readiness', () => {
+  it('requires the Muse banner, skills summary, and composer', async () => {
+    const { isMuseReadyPromptPreview } = await import('./terminal-wait-detection')
+    expect(isMuseReadyPromptPreview('Muse Code\nSkills: 36 loaded\n❯')).toBe(true)
+    expect(isMuseReadyPromptPreview('Muse Code\nSkills: 36 loaded')).toBe(false)
+    expect(isMuseReadyPromptPreview('Muse Code\n❯')).toBe(false)
+  })
+})
