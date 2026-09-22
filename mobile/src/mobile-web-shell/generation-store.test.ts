@@ -6,6 +6,7 @@ import type {
   GenerationFileSystem
 } from './generation-store-file-system'
 import type { MobileWebBundleFetchResult } from '../transport/mobile-web-bundle-fetch'
+import type { MobileWebBundleManifestRead } from '../transport/mobile-web-bundle-reply-schemas'
 
 // The adapter is deliberately untested at runtime — it would need a device filesystem — so this is
 // the check that it still answers the port the store is written against.
@@ -24,8 +25,10 @@ type FakeFileSystem = GenerationFileSystem & {
   seed(path: string, node: FakeNode): void
   failWritesAt(path: string | null): void
   failReadsAt(path: string | null): void
+  failFileMovesTo(path: string | null): void
   loseContentsOnMove(): void
   text(path: string): string | null
+  bytes(path: string): Uint8Array | null
 }
 
 function createFakeFileSystem(): FakeFileSystem {
@@ -33,6 +36,7 @@ function createFakeFileSystem(): FakeFileSystem {
   const writes: string[] = []
   let failAt: string | null = null
   let failReadAt: string | null = null
+  let failMoveTo: string | null = null
   let moveKeepsContents = true
   const uri = (path: string): string => `${ROOT}/${path}`
   const parentOf = (target: string): string => target.slice(0, target.lastIndexOf('/'))
@@ -69,12 +73,19 @@ function createFakeFileSystem(): FakeFileSystem {
     failReadsAt: (path) => {
       failReadAt = path
     },
+    failFileMovesTo: (path) => {
+      failMoveTo = path
+    },
     loseContentsOnMove: () => {
       moveKeepsContents = false
     },
     text: (path) => {
       const node = nodes.get(uri(path))
       return node?.kind === 'file' ? new TextDecoder().decode(node.bytes) : null
+    },
+    bytes: (path) => {
+      const node = nodes.get(uri(path))
+      return node?.kind === 'file' ? node.bytes : null
     },
     async list(target) {
       if (nodes.get(target)?.kind !== 'directory') {
@@ -114,6 +125,19 @@ function createFakeFileSystem(): FakeFileSystem {
           nodes.delete(key)
         }
       }
+    },
+    async moveFile(fromUri, toUri) {
+      // The adapter's own shape: the destination goes as part of the move, because expo refuses one
+      // that exists. A failure therefore either leaves the old file or leaves none.
+      if (failMoveTo !== null && toUri === uri(failMoveTo)) {
+        throw new Error('simulated interrupted rename')
+      }
+      const node = nodes.get(fromUri)
+      if (node?.kind !== 'file') {
+        throw new Error(`fake filesystem has no file at ${fromUri}`)
+      }
+      nodes.delete(fromUri)
+      nodes.set(toUri, node)
     },
     async moveDirectory(fromUri, toUri) {
       if (nodes.has(toUri)) {
@@ -629,5 +653,97 @@ describe('generation store', () => {
 
   it('keeps the adapter aligned with the port', () => {
     expect(adapterSatisfiesPort).toBe(true)
+  })
+})
+
+/**
+ * A route-grant edit on the desktop moves no asset, so the build id it is published under does not
+ * move: the generation on disk is the right bytes under a manifest that is an edit behind, and that
+ * stored manifest is what an unreachable host is judged by. This is the write-through, and it is
+ * refused unless the fresh manifest names exactly the bytes already there.
+ */
+describe('persisting a fresh manifest onto the active generation', () => {
+  const BUILD = 'a'.repeat(64)
+  const MANIFEST_PATH = `${HOST}/generations/${BUILD}/manifest.json`
+  const ROUTES = [{ pathname: '/h/[hostId]', grants: ['navigate'] }]
+
+  function freshManifest(
+    overrides: Partial<MobileWebBundleManifestRead> = {}
+  ): MobileWebBundleManifestRead {
+    return { ...buildResult({}).manifest, routes: ROUTES, ...overrides }
+  }
+
+  it('rewrites the manifest and leaves every asset byte where it was', async () => {
+    const fs = createFakeFileSystem()
+    const store = createGenerationStore({ fileSystem: fs })
+    await activate(store, HOST)
+    const before = fs.paths()
+    const entry = fs.bytes(`${HOST}/generations/${BUILD}/index.html`)
+    const fresh = freshManifest()
+
+    expect(await store.persistActiveManifest(HOST, fresh)).toBe('persisted')
+
+    expect(fs.text(MANIFEST_PATH)).toBe(JSON.stringify(fresh))
+    expect(fs.bytes(`${HOST}/generations/${BUILD}/index.html`)).toEqual(entry)
+    expect(fs.paths()).toEqual(before)
+    expect((await store.readActiveGeneration(HOST))?.manifest.routes).toEqual(ROUTES)
+  })
+
+  it('refuses a manifest that names other bytes under the same build id', async () => {
+    const fs = createFakeFileSystem()
+    const store = createGenerationStore({ fileSystem: fs })
+    await activate(store, HOST)
+    const stored = fs.text(MANIFEST_PATH)
+    const assets = buildResult({}).manifest.assets.map((asset, index) =>
+      index === 0 ? { ...asset, sha256: 'f'.repeat(64) } : asset
+    )
+
+    expect(await store.persistActiveManifest(HOST, freshManifest({ assets }))).toBe(
+      'refused-asset-mismatch'
+    )
+
+    expect(fs.text(MANIFEST_PATH)).toBe(stored)
+    expect((await store.readActiveGeneration(HOST))?.manifest.routes).toBeUndefined()
+  })
+
+  it('refuses a manifest published under another build id', async () => {
+    const fs = createFakeFileSystem()
+    const store = createGenerationStore({ fileSystem: fs })
+    await activate(store, HOST)
+    const stored = fs.text(MANIFEST_PATH)
+
+    expect(
+      await store.persistActiveManifest(HOST, freshManifest({ buildId: 'b'.repeat(64) }))
+    ).toBe('refused-build-mismatch')
+
+    expect(fs.text(MANIFEST_PATH)).toBe(stored)
+  })
+
+  it('refuses a host with no activation to persist onto, and writes nothing', async () => {
+    const fs = createFakeFileSystem()
+    const store = createGenerationStore({ fileSystem: fs })
+
+    expect(await store.persistActiveManifest(HOST, freshManifest())).toBe(
+      'refused-no-active-generation'
+    )
+
+    expect(fs.paths()).toEqual([])
+  })
+
+  it('leaves the manifest that is on disk when the rename is interrupted', async () => {
+    const fs = createFakeFileSystem()
+    const store = createGenerationStore({ fileSystem: fs })
+    await activate(store, HOST)
+    const stored = fs.text(MANIFEST_PATH)
+    fs.failFileMovesTo(MANIFEST_PATH)
+
+    await expect(store.persistActiveManifest(HOST, freshManifest())).rejects.toThrow(
+      'interrupted rename'
+    )
+
+    // Readable, and still the manifest the assets were downloaded with: the fresh one is written
+    // beside it, so nothing the old one said is gone until the whole of the new one is there.
+    expect(fs.text(MANIFEST_PATH)).toBe(stored)
+    expect((await store.readActiveGeneration(HOST))?.manifest.routes).toBeUndefined()
   })
 })

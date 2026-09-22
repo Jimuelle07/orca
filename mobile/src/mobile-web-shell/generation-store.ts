@@ -5,12 +5,16 @@ import {
 } from '../transport/mobile-web-bundle-reply-schemas'
 import type { MobileWebBundleFetchResult } from '../transport/mobile-web-bundle-fetch'
 import type { GenerationDirectoryEntry, GenerationFileSystem } from './generation-store-file-system'
+import { refuseManifestPersist, type ManifestPersistOutcome } from './manifest-persist-refusal'
 import { isHostCacheKey } from './host-cache-key'
 
 const GENERATIONS_DIRECTORY_NAME = 'generations'
 const STAGING_DIRECTORY_NAME = 'tmp'
 const MANIFEST_FILE_NAME = 'manifest.json'
 const HOST_INDEX_FILE_NAME = 'hosts.json'
+/** Where a fresh manifest is written before it is renamed over the active one. Under the host's
+ *  staging tree rather than beside the assets, so it can never be an asset path an edit takes. */
+const STAGED_MANIFEST_FILE_NAME = 'manifest-next.json'
 
 /** The architecture reference's cache ceiling: four hosts, least recently activated evicted. */
 export const MAX_CACHED_HOSTS = 4
@@ -36,6 +40,18 @@ export type GenerationStore = {
   abortStagedGeneration(staged: StagedGeneration): Promise<void>
   sweepStagedGenerations(): Promise<void>
   deleteHostCache(hostKey: string): Promise<void>
+  /**
+   * Rewrites the manifest stored beside a host's active generation, and nothing else.
+   *
+   * For the one edit that changes a manifest without changing a byte of the bundle: route grants
+   * are published under the build id of the assets they describe, so a same-build cache hit holds
+   * the right bytes under a manifest an edit behind. The stored manifest is what an unreachable
+   * host is judged by, so until it is rewritten every offline verdict lags.
+   */
+  persistActiveManifest(
+    hostKey: string,
+    manifest: MobileWebBundleManifestRead
+  ): Promise<ManifestPersistOutcome>
 }
 
 /** Recency only, so anything unreadable degrades to "evict this host first". */
@@ -243,6 +259,26 @@ export function createGenerationStore(options: {
     return active
   }
 
+  async function persistManifest(
+    hostKey: string,
+    manifest: MobileWebBundleManifestRead
+  ): Promise<ManifestPersistOutcome> {
+    const active = await readActive(hostKey)
+    if (active === null) {
+      return 'refused-no-active-generation'
+    }
+    const refusal = refuseManifestPersist(active.manifest, manifest)
+    if (refusal !== null) {
+      return refusal
+    }
+    // Beside first, then over: a write that fails or tears leaves the manifest the assets were
+    // downloaded with, which still names exactly the bytes on disk.
+    const staged = joinUri(stagingRoot(hostKey), STAGED_MANIFEST_FILE_NAME)
+    await fs.writeText(staged, JSON.stringify(manifest))
+    await fs.moveFile(staged, joinUri(active.directory, MANIFEST_FILE_NAME))
+    return 'persisted'
+  }
+
   async function sweep(): Promise<void> {
     // Every host's `tmp`, not just the one being opened: an interrupted download must not survive a
     // restart, and it may belong to a host this launch never selects.
@@ -277,7 +313,9 @@ export function createGenerationStore(options: {
     abortStagedGeneration: (staged) =>
       serialize(() => fs.delete(requireIssuedHandle(staged).directory)),
     sweepStagedGenerations: () => serialize(sweep),
-    deleteHostCache: (hostKey) => serialize(() => deleteHost(hostKey))
+    deleteHostCache: (hostKey) => serialize(() => deleteHost(hostKey)),
+    persistActiveManifest: (hostKey, manifest) =>
+      serialize(() => persistManifest(hostKey, manifest))
   }
 }
 
