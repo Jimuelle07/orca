@@ -140,11 +140,7 @@ export function formatTerminalHistory(result: { history: RuntimeTerminalHistory 
     ...(history.truncated
       ? ['warning: older output is not in this history; raise --tail-lines to ask for more']
       : []),
-    ...(history.source === 'screen-unavailable'
-      ? [
-          'warning: no rendered screen was available, so this is accumulated output; repainted lines may appear as stacked fragments'
-        ]
-      : [])
+    ...(history.source === 'screen-unavailable' ? [SCREEN_UNAVAILABLE_READ_WARNING] : [])
   ]
   return [...header, '', history.history].join('\n')
 }
