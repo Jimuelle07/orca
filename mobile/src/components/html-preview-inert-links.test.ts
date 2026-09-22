@@ -92,7 +92,7 @@ describe('an artifact rendered for a shell that cannot open a link', () => {
       '<!doctype html><html><body><script>window.__ran = 1</script><a href="/x">a</a></body></html>'
     const out = htmlPreviewWithInertLinks(withScript)
     expect(out).toContain('window.__ran = 1')
-    expect(Reflect.get(globalThis, '__ran')).toBeUndefined()
+    expect('__ran' in globalThis).toBe(false)
   })
 
   it('leaves an href inside a comment or a template where a regex pass would have found it', () => {
