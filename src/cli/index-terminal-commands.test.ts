@@ -156,6 +156,32 @@ describe('orca cli worktree awareness', () => {
     expect(printed.result.history.truncated).toBe(true)
   })
 
+  it('passes --screen through to terminal.history', async () => {
+    queueFixtures(
+      callMock,
+      okFixture('req_terminal_history_screen', {
+        history: {
+          handle: 'term_worker',
+          status: 'running',
+          history: 'rendered screen contents',
+          lineCount: 1,
+          truncated: false,
+          source: 'screen'
+        }
+      })
+    )
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await main(['terminal', 'history', '--terminal', 'term_worker', '--screen', '--json'], '/tmp/repo')
+
+    expect(callMock).toHaveBeenCalledWith('terminal.history', {
+      terminal: 'term_worker',
+      screen: true
+    })
+    const printed = JSON.parse(String(logSpy.mock.calls[0]?.[0]))
+    expect(printed.result.history.source).toBe('screen')
+  })
+
   it('keeps interactive Codex startup commands backgrounded unless focus is explicit', async () => {
     queueFixtures(
       callMock,
