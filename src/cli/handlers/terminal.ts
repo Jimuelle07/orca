@@ -117,11 +117,21 @@ export const TERMINAL_HANDLERS: Record<string, CommandHandler> = {
   },
   // The read verb an agent reaches for: no cursor bookkeeping, one string back.
   'terminal history': async ({ flags, client, cwd, json }) => {
+    const screen = flags.get('screen') === true
     const result = await client.call<{ history: RuntimeTerminalHistory }>('terminal.history', {
       terminal: await getTerminalHandle(flags, cwd, client),
       tailLines: getOptionalPositiveIntegerFlag(flags, 'tail-lines'),
-      ...(flags.get('screen') === true ? { screen: true } : {})
+      ...(screen ? { screen: true } : {})
     })
+    // Why: same as `terminal read` — an older host drops the unknown `screen` param and answers
+    // with its ordinary stream read, which carries no source. `screen-unavailable` already says
+    // so explicitly and keeps its own warning; only a silently absent source must be refused.
+    if (screen && result.result.history.source === undefined) {
+      throw new RuntimeClientError(
+        'incompatible_runtime',
+        'This Orca host does not support --screen reads, so it answered with accumulated output instead of the rendered screen. Update Orca on the host, or drop --screen to read accumulated output deliberately.'
+      )
+    }
     printResult(result, json, formatTerminalHistory)
   },
   'terminal send': terminalSendHandler,

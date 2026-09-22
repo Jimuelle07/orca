@@ -182,6 +182,36 @@ describe('orca cli worktree awareness', () => {
     expect(printed.result.history.source).toBe('screen')
   })
 
+  // Why: mirrors terminal read --screen — an older host drops the unknown `screen` param and
+  // answers with its ordinary history, which carries no source. Handing that back silently would
+  // be the read verb's original defect wearing terminal history's name.
+  it("refuses to pass an older host's history off as a screen read", async () => {
+    queueFixtures(
+      callMock,
+      okFixture('req_terminal_history_screen_old_host', {
+        history: {
+          handle: 'term_worker',
+          status: 'running',
+          history: 'cclclecleaclear',
+          lineCount: 1,
+          truncated: false
+        }
+      })
+    )
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const priorExitCode = process.exitCode
+
+    await main(['terminal', 'history', '--terminal', 'term_worker', '--screen', '--json'], '/tmp/repo')
+
+    expect([...logSpy.mock.calls, ...errSpy.mock.calls].flat().join('\n')).toContain(
+      'does not support --screen reads'
+    )
+    expect(process.exitCode).toBe(1)
+
+    process.exitCode = priorExitCode
+  })
+
   it('keeps interactive Codex startup commands backgrounded unless focus is explicit', async () => {
     queueFixtures(
       callMock,
