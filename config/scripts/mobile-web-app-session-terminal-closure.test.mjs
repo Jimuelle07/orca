@@ -292,8 +292,23 @@ const MERMAID_PACKAGE = 'node_modules/mermaid/'
  * icon above joined beside the row splitter and was not counted. #22119 (`197550c952`) repinned
  * main to 4,333 with the paragraph above, and folding it here moves nothing — the icon was already
  * on both sides of the +26, so the pin below is this merge's own measurement, unchanged.
+ *
+ * C8.1 then gave the HTML preview a capability to ask about, and three local modules join. Both
+ * sides measured with `mobileWebAppRouteClosure(SESSION_ROUTE)` at base `841d06a969` with all five
+ * postinstall generators run first, and the two `local` lists diffed rather than the total inferred:
+ *
+ *   modules        4359 -> 4362   (+3)
+ *   local modules  1017 -> 1020   (+3)
+ *
+ * Named, and all three local: `src/components/use-html-preview-link-grant.web.ts`, the page's read
+ * of `init.grants.native`; `src/components/html-preview-inert-links.ts`, the pass that turns the
+ * artifact's links back into text without it; and
+ * `src/mobile-web-shell/cancelled-navigation-target.ts`, which declares the grant token beside the
+ * rule that acts on it and is reached both by that hook and by `page-route-policy.ts`. The
+ * `bridge-caps.ts` it imports was already in this closure, and the hook's native sibling is
+ * replaced rather than joined. Nothing vendored: three source modules, no package.
  */
-const SESSION_ROUTE_MODULES = 4359
+const SESSION_ROUTE_MODULES = 4362
 
 /** What the page enters this route through once the route is a switch with a `.web.tsx` sibling. */
 const ROUTE_ENTRY = [
