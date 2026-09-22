@@ -7,6 +7,7 @@ import {
   grantsForRoute,
   routeViewOf
 } from './page-route-policy'
+import { BridgePageRouteGrantsSchema } from './bridge/bridge-page-route-grants'
 import { BRIDGE_HAPTICS_GRANT } from './bridge/bridge-haptics-notify'
 import {
   BRIDGE_NATIVE_METHOD_PREFIX,
@@ -271,5 +272,42 @@ describe('a page route that needs the haptics token', () => {
         { ...route, grants: route.grants.filter((grant) => grant !== BRIDGE_HAPTICS_GRANT) }
       ])
     ).toEqual(['/h/[hostId]'])
+  })
+})
+
+/**
+ * What the publish hands the host, against the schema the host holds it to.
+ *
+ * `BridgePageRouteGrantsSchema` is `.strict()` and the phone's manifest reader is loose, so these
+ * two rules meet on this one value: an entry arrives carrying whatever field the desktop that wrote
+ * it knew about, and a strict parse of that entry refuses the pairs and takes the session with
+ * them. The route below is the shape the next desktop field has -- read by that desktop, unknown
+ * here -- and the case is that it costs this page nothing.
+ */
+describe('the pairs a session publishes to the page', () => {
+  const carryingAnUnreadField = [
+    {
+      pathname: '/h/[hostId]',
+      grants: ['navigate', 'storage'],
+      optionalGrants: ['externalNavigation']
+    }
+  ]
+
+  it('publishes only the two members that cross, whatever else the entry carried', () => {
+    expect(routeViewOf(carryingAnUnreadField, '/h/host-1').pageRouteGrants).toEqual([
+      { pathname: '/h/[hostId]', grants: ['navigate', 'storage'] }
+    ])
+  })
+
+  it('publishes pairs the host schema accepts, so the session is not refused with them', () => {
+    const { pageRouteGrants } = routeViewOf(carryingAnUnreadField, '/h/host-1')
+    const parsed = BridgePageRouteGrantsSchema.safeParse(pageRouteGrants)
+    expect(parsed.error?.issues[0]?.message ?? 'accepted').toBe('accepted')
+    expect(parsed.success).toBe(true)
+  })
+
+  it('copies the list, so nothing the shell keeps is reachable through the frame it hands out', () => {
+    const routes = [{ pathname: '/h/[hostId]', grants: ['navigate'] }]
+    expect(routeViewOf(routes, '/h/host-1').pageRouteGrants[0]?.grants).not.toBe(routes[0]?.grants)
   })
 })

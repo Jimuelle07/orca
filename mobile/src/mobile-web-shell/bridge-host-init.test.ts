@@ -8,6 +8,7 @@ import {
 } from './bridge/bridge-caps'
 import { BRIDGE_FAULT_GRANT } from './bridge/bridge-envelope'
 import { BRIDGE_ROUTE_PARAM_CLEAR } from './bridge/bridge-route-update'
+import { routeViewOf } from './page-route-policy'
 
 describe('init and state', () => {
   it('answers ready with the getters, the caps it enforces, and the grants it honours', () => {
@@ -84,6 +85,39 @@ describe('init and state', () => {
     // Every pattern the page is told it may keep has an entry saying what keeping it costs.
     expect((init.pageRouteGrants ?? []).map((entry) => entry.pathname)).toEqual([...PAGE_ROUTES])
     expect(init.pageRouteGrants).toEqual(PAGE_ROUTE_GRANTS)
+  })
+
+  /**
+   * The publish path end to end, because each half of it looks correct alone.
+   *
+   * The phone reads a manifest route loosely and this schema is `.strict()`, so an entry carrying a
+   * field a newer desktop wrote refuses the pairs -- and the refusal is not the field being dropped,
+   * it is `createBridgeHost` refusing the route and the page never getting an `init` at all. Driven
+   * through `routeViewOf` rather than by handing the harness a pair, because the publish is the
+   * thing under test and a hand-built pair proves nothing about it.
+   */
+  it('answers init for a route entry carrying a manifest field this build does not read', () => {
+    const declared = [
+      {
+        pathname: '/h/[hostId]',
+        grants: ['navigate', 'storage', 'haptics'],
+        optionalGrants: ['externalNavigation']
+      }
+    ]
+    const bridge = harness({
+      pageRouteGrants: routeViewOf(declared, ROUTE.pathname).pageRouteGrants
+    })
+    bridge.host.receive(clientFrame({ type: 'ready' }))
+    expect(bridge.routeRefusals).toEqual([])
+    const init = bridge.last()
+    if (init.type !== 'init') {
+      throw new Error('expected an init frame')
+    }
+    // The pairs still cross, so the page keeps the handoff rule it was built with rather than
+    // falling back to "nobody told me" and handing every hop to the shell.
+    expect(init.pageRouteGrants).toEqual([
+      { pathname: '/h/[hostId]', grants: ['navigate', 'storage', 'haptics'] }
+    ])
   })
 
   it('refuses a grant name the manifest grammar refuses, naming the field it came from', () => {

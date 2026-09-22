@@ -116,12 +116,21 @@ export function grantsForRoute(
  * Derived together because they are one reading of one list: the patterns the page may keep, what
  * each of them declared, and what this route itself was granted. Three sites used to spell this
  * out; a fourth spelling is how they drift.
+ *
+ * `pageRouteGrants` is built rather than passed through, and that is load-bearing. The phone reads
+ * a manifest route loosely, so an entry arrives carrying whatever the desktop that wrote it knew
+ * about; `BridgePageRouteGrantsSchema` is `.strict()`, so one unread key refuses the pairs, and
+ * `bridge-host.ts` refuses the whole session with them. A desktop field this build has never heard
+ * of must cost the page nothing, which means only the two members that cross may be handed over.
  */
 export function routeViewOf(routes: readonly MobileWebPageRoute[] | undefined, pathname: string) {
   const entries = implementedPageRouteEntries(routes)
   return {
     pageRoutes: entries.map((route) => route.pathname),
-    pageRouteGrants: entries,
+    pageRouteGrants: entries.map((route) => ({
+      pathname: route.pathname,
+      grants: [...route.grants]
+    })),
     routeGrants: grantsForRoute(routes, pathname)
   }
 }
