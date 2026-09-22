@@ -1,0 +1,117 @@
+import { describe, expect, it } from 'vitest'
+import type { CachedGeneration } from './mobile-web-shell-session-contract'
+import {
+  CACHED,
+  MANIFEST_WIRE,
+  PAGE_ROUTES,
+  ROUTE,
+  afterCacheRead,
+  createMobileWebShellSession,
+  gates,
+  manifestFacts,
+  run
+} from './mobile-web-shell-session-test-fixtures'
+
+/** What the same bytes declared before the edit: this shell has no `teleport`, so the route is the
+ *  native screen's until the edit that drops it is persisted. */
+const STALE_ROUTES = [{ pathname: '/h/[hostId]', grants: ['navigate', 'teleport'] }]
+const STALE: CachedGeneration = { ...CACHED, routes: STALE_ROUTES }
+const FRESH = manifestFacts({ ...MANIFEST_WIRE, routes: PAGE_ROUTES })
+
+/**
+ * A route-grant edit on the desktop moves no asset, so the bundle's build id does not move either.
+ * The session reads the fresh routes off the manifest and opens the cached generation, but the
+ * manifest stored beside those assets is the edit before — and that stored one is what an
+ * unreachable host is judged by. Without a write-through, every offline verdict lags a grant edit.
+ */
+describe('a same-build manifest read over a cached generation', () => {
+  it('opens the cached generation and persists the manifest beside it', () => {
+    const step = run(afterCacheRead(STALE).session, { type: 'manifest-read', manifest: FRESH })
+
+    expect(step.session.state).toEqual({ kind: 'activating' })
+    expect(step.effects).toEqual([
+      {
+        kind: 'open-generation',
+        directory: CACHED.directory,
+        buildId: CACHED.buildId,
+        totalBytes: CACHED.totalBytes
+      },
+      { kind: 'persist-manifest', manifest: FRESH.wire }
+    ])
+  })
+
+  it('carries the fresh routes on the generation it holds, so a later read in this process agrees', () => {
+    const step = run(afterCacheRead(STALE).session, { type: 'manifest-read', manifest: FRESH })
+
+    expect(step.session.cached?.routes).toEqual(PAGE_ROUTES)
+    expect(step.session.routeGrants).toEqual(['navigate'])
+  })
+
+  it('persists nothing when the cached build is a different one, and fetches instead', () => {
+    const otherBuild: CachedGeneration = { ...STALE, buildId: 'c'.repeat(64) }
+
+    const step = run(afterCacheRead(otherBuild).session, { type: 'manifest-read', manifest: FRESH })
+
+    expect(step.effects).toEqual([{ kind: 'download' }])
+    expect(step.session.cached?.routes).toEqual(STALE_ROUTES)
+  })
+
+  it('persists nothing when there is no generation to persist onto', () => {
+    const step = run(afterCacheRead(null).session, { type: 'manifest-read', manifest: FRESH })
+
+    expect(step.effects).toEqual([{ kind: 'download' }])
+  })
+})
+
+/**
+ * The verdict the persist exists for: a later entry into the route with the host gone, judged by
+ * the routes the fresh manifest declared rather than the ones the assets were downloaded with.
+ *
+ * A separate session, because that is the only way this is reached: an `activating` or `ready`
+ * session is never restarted by a reachability change, so the offline read belongs to the next
+ * mount of the route — the one whose whole evidence is what is on disk.
+ */
+describe('the offline entry after a same-build manifest was persisted', () => {
+  /** The manifest the online read asked the store to write, as a generation read back off disk. */
+  function persistedGeneration(): CachedGeneration {
+    const online = run(afterCacheRead(STALE).session, { type: 'manifest-read', manifest: FRESH })
+    const written = online.effects.flatMap((effect) =>
+      effect.kind === 'persist-manifest' ? [effect.manifest] : []
+    )
+    expect(written).toEqual([FRESH.wire])
+    return { ...CACHED, routes: written[0]?.routes }
+  }
+
+  function offlineEntry(generation: CachedGeneration) {
+    const started = run(createMobileWebShellSession(ROUTE), {
+      type: 'gates-changed',
+      gates: gates({ reachability: 'unreachable' })
+    })
+    expect(started.effects).toEqual([{ kind: 'open-cache' }])
+    return run(started.session, { type: 'cache-read', generation })
+  }
+
+  it('opens the route only the fresh grants allow', () => {
+    const step = offlineEntry(persistedGeneration())
+
+    expect(step.session.state).toEqual({ kind: 'activating' })
+    expect(step.effects).toEqual([
+      {
+        kind: 'open-generation',
+        directory: CACHED.directory,
+        buildId: CACHED.buildId,
+        totalBytes: CACHED.totalBytes
+      }
+    ])
+    expect(step.session.routeGrants).toEqual(['navigate'])
+  })
+
+  it('leaves it native on the manifest the assets were downloaded with', () => {
+    // The discriminator: the same entry against the stored manifest nothing rewrote, which is what
+    // every offline verdict was judged by before the write-through.
+    const step = offlineEntry(STALE)
+
+    expect(step.session.state).toEqual({ kind: 'native-route' })
+    expect(step.session.pageRoutes).toEqual([])
+  })
+})

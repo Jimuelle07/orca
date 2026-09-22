@@ -112,11 +112,13 @@ function startFlow(
   return step(session, { ...base, state: CHECKING }, [...before, { kind: 'open-cache' }])
 }
 
-/** Puts a generation that is already on disk on screen. The only producer of `open-generation`. */
+/** Puts a generation that is already on disk on screen. The only producer of `open-generation`.
+ *  `andThen` is the disk work that opening one may owe, which runs after the view has its bytes. */
 function openCached(
   session: MobileWebShellSession,
   generation: CachedGeneration,
-  patch: Partial<MobileWebShellSession> = {}
+  patch: Partial<MobileWebShellSession> = {},
+  andThen: readonly MobileWebShellSessionEffect[] = []
 ): MobileWebShellStep {
   return step(session, { ...patch, state: { kind: 'activating' } }, [
     {
@@ -124,7 +126,8 @@ function openCached(
       directory: generation.directory,
       buildId: generation.buildId,
       totalBytes: generation.totalBytes
-    }
+    },
+    ...andThen
   ])
 }
 
@@ -183,7 +186,17 @@ function onManifestRead(
   }
   const cached = session.cached
   if (cached !== null && cached.buildId === manifest.buildId) {
-    return openCached(session, cached, { pageRoutes, pageRouteGrants, routeGrants })
+    // The same bytes under a newer manifest, which is what a route-grant edit publishes: the id is
+    // a digest of the assets alone. The generation carries the fresh routes from here, and the
+    // store is asked to write them, because the stored manifest is the whole of the next offline
+    // verdict and nothing else on this path writes anything.
+    const refreshed: CachedGeneration = { ...cached, routes: manifest.routes }
+    return openCached(
+      session,
+      refreshed,
+      { cached: refreshed, pageRoutes, pageRouteGrants, routeGrants },
+      [{ kind: 'persist-manifest', manifest: manifest.wire }]
+    )
   }
   return step(
     session,
