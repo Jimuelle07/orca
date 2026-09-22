@@ -9,12 +9,14 @@ import {
   routeViewOf
 } from './page-route-policy'
 import { BridgePageRouteGrantsSchema } from './bridge/bridge-page-route-grants'
+import { BRIDGE_EXTERNAL_NAVIGATION_GRANT } from './cancelled-navigation-target'
 import { BRIDGE_HAPTICS_GRANT } from './bridge/bridge-haptics-notify'
 import {
   BRIDGE_NATIVE_METHOD_PREFIX,
   BRIDGE_NATIVE_VERB_NAMES,
   BRIDGE_NATIVE_VERBS
 } from './bridge/bridge-native-verbs'
+import { BRIDGE_SCREENCAST_BINARY_GRANT } from './bridge/bridge-screencast-grant'
 
 /**
  * The patterns a session would be told it may keep, read through the view the reducer builds.
@@ -93,6 +95,7 @@ describe('the grants this app implements', () => {
       'externalLink',
       'screencastBinary',
       'haptics',
+      'externalNavigation',
       'native.clipboard.write',
       'native.clipboard.read',
       'native.media.pick',
@@ -119,6 +122,36 @@ describe('the grants this app implements', () => {
         grant
       ).toBe(true)
     }
+  })
+
+  /**
+   * The set is the verb table plus three tokens, and nothing else.
+   *
+   * The verb half is spread from the table and pinned below. This is the other half: a token is a
+   * shell behaviour with no request behind it, so nothing makes one appear except a line in this
+   * list -- and a page reads `init.grants.native` for all of them alike. Named against the modules
+   * that declare them rather than as strings, so a rename has to change both sides.
+   */
+  it('names exactly three behaviours that are not verbs, each from its own module', () => {
+    const tokens = MOBILE_WEB_SHELL_GRANTS.filter(
+      (grant) => !grant.startsWith(BRIDGE_NATIVE_METHOD_PREFIX)
+    )
+    expect([...tokens]).toEqual([
+      'navigate',
+      'storage',
+      'externalLink',
+      BRIDGE_SCREENCAST_BINARY_GRANT,
+      BRIDGE_HAPTICS_GRANT,
+      BRIDGE_EXTERNAL_NAVIGATION_GRANT
+    ])
+    // Not a verb spelling, and not a notify's dotted name: the grammar would refuse either.
+    expect(BRIDGE_EXTERNAL_NAVIGATION_GRANT).toBe('externalNavigation')
+    expect(
+      MobileWebBundleRouteSchema.safeParse({
+        pathname: '/h/[hostId]',
+        grants: ['native.externalNavigation']
+      }).success
+    ).toBe(false)
   })
 
   it('names every verb in the table there too, so the two lists cannot drift apart', () => {
@@ -156,6 +189,35 @@ describe('the grants this app implements', () => {
     ]
     expect(grantsForRoute(routes, '/h/host-1/session/wt-1')).toEqual(['navigate'])
     expect(pageRoutesOf(routes)).toEqual([])
+  })
+
+  /**
+   * The token C8.1 exists for, on the lane it is declared on.
+   *
+   * Optional, because a preview whose links are inert is still a complete screen (ruling 37.2): the
+   * artifact renders, the toggle works, the source tab works. Required would have taken the whole
+   * session screen native on every shell built before C7.10 A.
+   */
+  it('grants external navigation to a route that declares it optionally', () => {
+    const routes = [
+      {
+        pathname: '/h/[hostId]/session/[worktreeId]',
+        grants: ['navigate', 'storage'],
+        optionalGrants: [BRIDGE_EXTERNAL_NAVIGATION_GRANT]
+      }
+    ]
+    expect(grantsForRoute(routes, '/h/host-1/session/wt-1')).toEqual([
+      'navigate',
+      'storage',
+      BRIDGE_EXTERNAL_NAVIGATION_GRANT
+    ])
+    // And a shell without the behaviour serves the same route, granting the rest: the page reads
+    // the name absent and hides the affordance, which is the whole of the hide path.
+    const older = MOBILE_WEB_SHELL_GRANTS.filter(
+      (grant) => grant !== BRIDGE_EXTERNAL_NAVIGATION_GRANT
+    )
+    expect(older).not.toContain(BRIDGE_EXTERNAL_NAVIGATION_GRANT)
+    expect(pageRoutesOf(routes)).toEqual(['/h/[hostId]/session/[worktreeId]'])
   })
 
   it('resolves the screencast lane for a route that declares it', () => {
@@ -286,17 +348,21 @@ describe('a page route that needs the haptics token', () => {
  * here -- and the case is that it costs this page nothing.
  */
 describe('the pairs a session publishes to the page', () => {
+  // Two unread keys, and neither is a guess: `optionalGrants` is the field this lane added, so it
+  // stands for one a shell built today reads, and `renderer` stands for the next one a desktop
+  // writes and no build here has heard of. The strict pair schema refuses either.
   const carryingAnUnreadField = [
     {
       pathname: '/h/[hostId]',
       grants: ['navigate', 'storage'],
-      optionalGrants: ['externalNavigation']
+      optionalGrants: ['screencastBinary'],
+      renderer: 'someLaterDesktopsField'
     }
   ]
 
   it('publishes only the two members that cross, whatever else the entry carried', () => {
     expect(routeViewOf(carryingAnUnreadField, '/h/host-1').pageRouteGrants).toEqual([
-      { pathname: '/h/[hostId]', grants: ['navigate', 'storage'] }
+      { pathname: '/h/[hostId]', grants: ['navigate', 'storage', 'screencastBinary'] }
     ])
   })
 

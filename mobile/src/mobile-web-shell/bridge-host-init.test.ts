@@ -48,6 +48,7 @@ describe('init and state', () => {
           'externalLink',
           'screencastBinary',
           'haptics',
+          'externalNavigation',
           'native.clipboard.write',
           'native.clipboard.read',
           'native.media.pick',
@@ -97,11 +98,12 @@ describe('init and state', () => {
    * thing under test and a hand-built pair proves nothing about it.
    */
   it('answers init for a route entry carrying a manifest field this build does not read', () => {
+    // A field no build here reads, which is the shape every later desktop field has.
     const declared = [
       {
         pathname: '/h/[hostId]',
         grants: ['navigate', 'storage', 'haptics'],
-        optionalGrants: ['externalNavigation']
+        renderer: 'someLaterDesktopsField'
       }
     ]
     const bridge = harness({

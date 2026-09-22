@@ -1,4 +1,5 @@
 import type { MobileWebBundleManifestRead } from '../transport/mobile-web-bundle-reply-schemas'
+import { BRIDGE_EXTERNAL_NAVIGATION_GRANT } from './cancelled-navigation-target'
 import { BRIDGE_HAPTICS_GRANT } from './bridge/bridge-haptics-notify'
 import { BRIDGE_NATIVE_VERB_NAMES } from './bridge/bridge-native-verbs'
 import { BRIDGE_SCREENCAST_BINARY_GRANT } from './bridge/bridge-screencast-grant'
@@ -25,6 +26,10 @@ export const MOBILE_WEB_SHELL_GRANTS = [
   // than the notify's dotted name, because a notify is not a verb: the dotted names below are the
   // verb table's, spread from it.
   BRIDGE_HAPTICS_GRANT,
+  // A gesture-started navigation off the shell's own document, cancelled and opened outside the
+  // app. Named where the rule that acts on it lives, and a third token that is neither verb nor
+  // notify: the page posts nothing for it, so only this list can tell a page a tap escapes.
+  BRIDGE_EXTERNAL_NAVIGATION_GRANT,
   // Spread rather than restated: the verb table is keyed on this same tuple, so a verb cannot be
   // advertised without a row and a row cannot exist without being advertised.
   ...BRIDGE_NATIVE_VERB_NAMES
