@@ -10,9 +10,9 @@ import {
   PAGE_READY_DEADLINE_MS,
   type MobileWebShellRuntime
 } from './mobile-web-shell-runtime'
+import { readMobileWebShellReachability } from './mobile-web-shell-reachability'
 import {
   createMobileWebShellSession,
-  readMobileWebShellReachability,
   reduceMobileWebShellSession
 } from './mobile-web-shell-session'
 import type {

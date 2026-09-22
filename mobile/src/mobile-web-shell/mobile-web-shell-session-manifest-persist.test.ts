@@ -12,10 +12,11 @@ import {
   run
 } from './mobile-web-shell-session-test-fixtures'
 
-/** What the same bytes declared before the edit: this shell has no `teleport`, so the route is the
- *  native screen's until the edit that drops it is persisted. */
-const STALE_ROUTES = [{ pathname: '/h/[hostId]', grants: ['navigate', 'teleport'] }]
-const STALE: CachedGeneration = { ...CACHED, routes: STALE_ROUTES }
+/** The route listed needing a grant this shell has no answer for, so it is the native screen's.
+ *  Either side of the edit can be the one that says this: an older list this build could not serve,
+ *  or a newer one that asks for more than it did. */
+const UNSERVED_ROUTES = [{ pathname: '/h/[hostId]', grants: ['navigate', 'teleport'] }]
+const STALE: CachedGeneration = { ...CACHED, routes: UNSERVED_ROUTES }
 const FRESH = manifestFacts({ ...MANIFEST_WIRE, routes: PAGE_ROUTES })
 
 /**
@@ -53,7 +54,7 @@ describe('a same-build manifest read over a cached generation', () => {
     const step = run(afterCacheRead(otherBuild).session, { type: 'manifest-read', manifest: FRESH })
 
     expect(step.effects).toEqual([{ kind: 'download' }])
-    expect(step.session.cached?.routes).toEqual(STALE_ROUTES)
+    expect(step.session.cached?.routes).toEqual(UNSERVED_ROUTES)
   })
 
   it('persists nothing when there is no generation to persist onto', () => {
@@ -113,5 +114,61 @@ describe('the offline entry after a same-build manifest was persisted', () => {
 
     expect(step.session.state).toEqual({ kind: 'native-route' })
     expect(step.session.pageRoutes).toEqual([])
+  })
+})
+
+/**
+ * The verdict about this route is not a verdict about the manifest.
+ *
+ * A same-build read is the truth about the bundle on disk however this route turns out: the fresh
+ * list may take this screen native or name a bundle this shell cannot open, and still grant or
+ * revoke another route the same generation serves. Refusing to write it there is how an offline
+ * entry keeps grants a desktop has already taken away.
+ */
+describe('a same-build manifest whose route verdict is not a page', () => {
+  it('persists the manifest that takes this route native', () => {
+    const fresh = manifestFacts({ ...MANIFEST_WIRE, routes: UNSERVED_ROUTES })
+
+    const step = run(afterCacheRead(CACHED).session, { type: 'manifest-read', manifest: fresh })
+
+    expect(step.session.state).toEqual({ kind: 'native-route' })
+    expect(step.effects).toEqual([{ kind: 'persist-manifest', manifest: fresh.wire }])
+    expect(step.session.cached?.routes).toEqual(UNSERVED_ROUTES)
+  })
+
+  it('persists the manifest it walls, because the wall is about this shell', () => {
+    const twoRoutes = [
+      { pathname: '/h/[hostId]', grants: ['navigate'] },
+      { pathname: '/h/[hostId]/tasks', grants: ['navigate'] }
+    ]
+    const fresh = manifestFacts({ ...MANIFEST_WIRE, schemaVersion: 99, routes: twoRoutes })
+
+    const step = run(afterCacheRead(CACHED).session, { type: 'manifest-read', manifest: fresh })
+
+    expect(step.session.state).toMatchObject({ kind: 'wall' })
+    expect(step.effects).toEqual([{ kind: 'persist-manifest', manifest: fresh.wire }])
+    expect(step.session.cached?.routes).toEqual(twoRoutes)
+  })
+
+  it('persists nothing for another build that takes this route native', () => {
+    const otherBuild: CachedGeneration = { ...CACHED, buildId: 'c'.repeat(64) }
+    const fresh = manifestFacts({ ...MANIFEST_WIRE, routes: UNSERVED_ROUTES })
+
+    const step = run(afterCacheRead(otherBuild).session, { type: 'manifest-read', manifest: fresh })
+
+    expect(step.session.state).toEqual({ kind: 'native-route' })
+    expect(step.effects).toEqual([])
+    expect(step.session.cached?.routes).toEqual(PAGE_ROUTES)
+  })
+
+  it('persists nothing and fetches nothing for another build that walls', () => {
+    const otherBuild: CachedGeneration = { ...CACHED, buildId: 'c'.repeat(64) }
+    const fresh = manifestFacts({ ...MANIFEST_WIRE, schemaVersion: 99 })
+
+    const step = run(afterCacheRead(otherBuild).session, { type: 'manifest-read', manifest: fresh })
+
+    expect(step.session.state).toMatchObject({ kind: 'wall' })
+    expect(step.effects).toEqual([])
+    expect(step.session.cached?.routes).toEqual(PAGE_ROUTES)
   })
 })

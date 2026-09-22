@@ -1,12 +1,9 @@
 import type { MobileWebShellFailureReason } from '../../modules/orca-mobile-web-shell/src/load-state'
-import type { RpcClient } from '../transport/rpc-client'
-import type { ConnectionState } from '../transport/types'
 import { evaluateMobileWebBundleCompat } from '../transport/mobile-web-bundle-compat'
 import type {
   CachedGeneration,
   MobileWebShellGates,
   MobileWebShellManifestFacts,
-  MobileWebShellReachability,
   MobileWebShellReadFailure,
   MobileWebShellSession,
   MobileWebShellSessionEffect,
@@ -16,26 +13,6 @@ import type {
 } from './mobile-web-shell-session-contract'
 import { awaitsGates, gateKey, gateVerdict } from './mobile-web-shell-gates'
 import { matchesRoutePattern, routeViewOf } from './page-route-policy'
-
-/**
- * The host's connection state as the three answers a step here needs.
- *
- * `reconnecting` is unreachable, not connecting, and that is the whole point of the distinction: a
- * host whose desktop is gone never settles on `disconnected`. The client dials, fails, schedules a
- * retry and cycles `connecting` -> `reconnecting` -> `connecting` with the delay growing to a
- * minute, so treating `reconnecting` as "still dialling" leaves a phone with a perfectly good
- * cached workspace spinning forever. `connecting` alone is the first dial, which is worth the wait
- * because it usually succeeds; a scheduled retry after a failure is evidence the host is not there.
- */
-export function readMobileWebShellReachability(
-  connState: ConnectionState,
-  client: RpcClient | null
-): MobileWebShellReachability {
-  if (connState === 'connected') {
-    return client === null ? 'connecting' : 'connected'
-  }
-  return connState === 'connecting' || connState === 'handshaking' ? 'connecting' : 'unreachable'
-}
 
 const CHECKING: MobileWebShellSessionState = { kind: 'checking' }
 const NATIVE_ROUTE: MobileWebShellSessionState = { kind: 'native-route' }
@@ -173,8 +150,25 @@ function onManifestRead(
     manifest.routes,
     session.routePathname
   )
+  // Same build id is the same bytes, because the id is their digest: a route-grant edit publishes
+  // the generation already on disk under a newer manifest. Read before this route's verdict,
+  // because that verdict is about this route while the manifest is the truth about the whole
+  // generation — a list that takes this screen native, or names a bundle this shell cannot open,
+  // still grants or revokes the other routes those assets serve, and what is stored beside them is
+  // the whole of the next offline verdict.
+  const cached = session.cached
+  const same: CachedGeneration | null =
+    cached === null || cached.buildId !== manifest.buildId
+      ? null
+      : { ...cached, routes: manifest.routes }
+  const persist: readonly MobileWebShellSessionEffect[] =
+    same === null ? [] : [{ kind: 'persist-manifest', manifest: manifest.wire }]
   if (!rendersRoute(pageRoutes, session.routePathname)) {
-    return step(session, { pageRoutes, pageRouteGrants, routeGrants, state: NATIVE_ROUTE })
+    return step(
+      session,
+      { cached: same ?? cached, pageRoutes, pageRouteGrants, routeGrants, state: NATIVE_ROUTE },
+      persist
+    )
   }
   const verdict = evaluateMobileWebBundleCompat({
     hostCapabilities: gates.hostCapabilities,
@@ -182,20 +176,14 @@ function onManifestRead(
     manifest
   })
   if (verdict.kind === 'blocked') {
-    return step(session, { state: { kind: 'wall', verdict } })
+    return step(session, { cached: same ?? cached, state: { kind: 'wall', verdict } }, persist)
   }
-  const cached = session.cached
-  if (cached !== null && cached.buildId === manifest.buildId) {
-    // The same bytes under a newer manifest, which is what a route-grant edit publishes: the id is
-    // a digest of the assets alone. The generation carries the fresh routes from here, and the
-    // store is asked to write them, because the stored manifest is the whole of the next offline
-    // verdict and nothing else on this path writes anything.
-    const refreshed: CachedGeneration = { ...cached, routes: manifest.routes }
+  if (same !== null) {
     return openCached(
       session,
-      refreshed,
-      { cached: refreshed, pageRoutes, pageRouteGrants, routeGrants },
-      [{ kind: 'persist-manifest', manifest: manifest.wire }]
+      same,
+      { cached: same, pageRoutes, pageRouteGrants, routeGrants },
+      persist
     )
   }
   return step(
