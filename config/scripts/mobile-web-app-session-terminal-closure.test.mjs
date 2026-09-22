@@ -293,6 +293,15 @@ const MERMAID_PACKAGE = 'node_modules/mermaid/'
  * main to 4,333 with the paragraph above, and folding it here moves nothing — the icon was already
  * on both sides of the +26, so the pin below is this merge's own measurement, unchanged.
  *
+ * Then #21705 (`eb92222e7f`) taught the agent option catalog Antigravity, and
+ * `src/shared/agent-session-option-catalog-antigravity.ts` entered through the catalog the session
+ * page already reaches. One module, string constants, no package; the one line that differs between
+ * the closure at `841d06a969` and at `eb92222e7f`. It landed beside C2's merge, so main read one
+ * short again.
+ *
+ *   modules        4359 -> 4360   (+1)
+ *   local modules  1017 -> 1018   (+1)
+ *
  * C8.1 then gave the HTML preview a capability to ask about, and three local modules join. Both
  * sides measured with `mobileWebAppRouteClosure(SESSION_ROUTE)` at base `841d06a969` with all five
  * postinstall generators run first, and the two `local` lists diffed rather than the total inferred:
@@ -307,8 +316,16 @@ const MERMAID_PACKAGE = 'node_modules/mermaid/'
  * rule that acts on it and is reached both by that hook and by `page-route-policy.ts`. The
  * `bridge-caps.ts` it imports was already in this closure, and the hook's native sibling is
  * replaced rather than joined. Nothing vendored: three source modules, no package.
+ *
+ * The merge of the two is measured rather than summed, which is what this reading keeps having to
+ * do. It agrees with the arithmetic this once, and only because the two additions are disjoint:
+ * main's one module is the option catalog and this branch's three are the preview's, so neither
+ * side counts the other's. Measured on the merged head with all five generators run first:
+ *
+ *   modules        4360 -> 4363   (+3, and 4359 -> 4363 from the shared base)
+ *   local modules  1018 -> 1021   (+3)
  */
-const SESSION_ROUTE_MODULES = 4362
+const SESSION_ROUTE_MODULES = 4363
 
 /** What the page enters this route through once the route is a switch with a `.web.tsx` sibling. */
 const ROUTE_ENTRY = [
