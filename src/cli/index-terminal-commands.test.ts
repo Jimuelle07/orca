@@ -126,6 +126,36 @@ describe('orca cli worktree awareness', () => {
     ])
   })
 
+  it('sends terminal history as a tail-lines read and prints the joined scrollback', async () => {
+    queueFixtures(
+      callMock,
+      okFixture('req_terminal_history', {
+        history: {
+          handle: 'term_worker',
+          status: 'running',
+          history: 'Traceback (most recent call last):\n  File "app.py", line 3',
+          lineCount: 2,
+          truncated: true,
+          source: 'stream'
+        }
+      })
+    )
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await main(
+      ['terminal', 'history', '--terminal', 'term_worker', '--tail-lines', '500', '--json'],
+      '/tmp/repo'
+    )
+
+    expect(callMock).toHaveBeenCalledWith('terminal.history', {
+      terminal: 'term_worker',
+      tailLines: 500
+    })
+    const printed = JSON.parse(String(logSpy.mock.calls[0]?.[0]))
+    expect(printed.result.history.history).toContain('Traceback')
+    expect(printed.result.history.truncated).toBe(true)
+  })
+
   it('keeps interactive Codex startup commands backgrounded unless focus is explicit', async () => {
     queueFixtures(
       callMock,

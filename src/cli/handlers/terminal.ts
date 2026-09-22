@@ -1,6 +1,7 @@
 import type {
   RuntimeTerminalCreate,
   RuntimeTerminalFocus,
+  RuntimeTerminalHistory,
   RuntimeTerminalListResult,
   RuntimeTerminalRead,
   RuntimeTerminalRename,
@@ -13,6 +14,7 @@ import { shouldUseRendererBackedInteractiveTerminal } from '../codex-command-cla
 import {
   formatTerminalCreate,
   formatTerminalFocus,
+  formatTerminalHistory,
   formatTerminalList,
   formatTerminalRead,
   formatTerminalRename,
@@ -112,6 +114,15 @@ export const TERMINAL_HANDLERS: Record<string, CommandHandler> = {
       )
     }
     printResult(result, json, formatTerminalRead)
+  },
+  // The read verb an agent reaches for: no cursor bookkeeping, one string back.
+  'terminal history': async ({ flags, client, cwd, json }) => {
+    const result = await client.call<{ history: RuntimeTerminalHistory }>('terminal.history', {
+      terminal: await getTerminalHandle(flags, cwd, client),
+      tailLines: getOptionalPositiveIntegerFlag(flags, 'tail-lines'),
+      ...(flags.get('screen') === true ? { screen: true } : {})
+    })
+    printResult(result, json, formatTerminalHistory)
   },
   'terminal send': terminalSendHandler,
   'terminal wait': async ({ flags, client, cwd, json }) => {

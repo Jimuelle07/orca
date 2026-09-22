@@ -6,6 +6,7 @@ import type {
   RuntimeTerminalClose,
   RuntimeTerminalCreate,
   RuntimeTerminalFocus,
+  RuntimeTerminalHistory,
   RuntimeTerminalListResult,
   RuntimeTerminalVisualLayout,
   RuntimeTerminalVisualLayoutNode,
@@ -123,6 +124,29 @@ function formatAgentWait(agentWait: RuntimeTerminalShow['agentWait']): string {
     return `interactive prompt (via ${agentWait.source})`
   }
   return `${describeTerminalWaitBlockedReason(agentWait.reason)} (via ${agentWait.source})`
+}
+
+/**
+ * The agent-facing counterpart of `formatTerminalRead`: a short provenance header, then the
+ * history as one block so a stack trace can be copied out of it unchanged.
+ */
+export function formatTerminalHistory(result: { history: RuntimeTerminalHistory }): string {
+  const history = result.history
+  const header = [
+    `handle: ${history.handle}`,
+    `status: ${history.status}`,
+    ...(history.source ? [`source: ${history.source}`] : []),
+    `lines: ${history.lineCount}`,
+    ...(history.truncated
+      ? ['warning: older output is not in this history; raise --tail-lines to ask for more']
+      : []),
+    ...(history.source === 'screen-unavailable'
+      ? [
+          'warning: no rendered screen was available, so this is accumulated output; repainted lines may appear as stacked fragments'
+        ]
+      : [])
+  ]
+  return [...header, '', history.history].join('\n')
 }
 
 export function formatTerminalRead(result: { terminal: RuntimeTerminalRead }): string {
