@@ -52,6 +52,20 @@ import { terminalSendHandler } from './terminal-send'
 // long waits instead of failing at the generic 15s transport cap.
 const DEFAULT_TERMINAL_WAIT_RPC_TIMEOUT_MS = 5 * 60 * 1000
 
+// Why: shared by `terminal read` and `terminal history` — an older host drops the unknown
+// `screen` param and answers with its ordinary read, which carries no source. Returning that
+// silently is the exact failure `--screen` exists to prevent, so refuse rather than hand back the
+// other question's answer. `screen-unavailable` already says so explicitly and keeps its own
+// warning, so only a silently absent source is refused here.
+function rejectUnsupportedScreenRead(screen: boolean, source: string | undefined): void {
+  if (screen && source === undefined) {
+    throw new RuntimeClientError(
+      'incompatible_runtime',
+      'This Orca host does not support --screen reads, so it answered with accumulated output instead of the rendered screen. Update Orca on the host, or drop --screen to read accumulated output deliberately.'
+    )
+  }
+}
+
 const terminalFocusHandler: CommandHandler = async ({ flags, client, cwd, json }) => {
   const result = await client.call<{ focus: RuntimeTerminalFocus }>('terminal.focus', {
     terminal: await getTerminalHandle(flags, cwd, client),
@@ -104,15 +118,7 @@ export const TERMINAL_HANDLERS: Record<string, CommandHandler> = {
       ...(screen ? { screen: true } : {}),
       limit: getOptionalPositiveIntegerFlag(flags, 'limit')
     })
-    // Why: an older host drops the unknown `screen` param and answers with its ordinary stream
-    // read, which carries no source. Returning that silently is the exact failure this flag
-    // exists to prevent, so refuse rather than hand back the other question's answer.
-    if (screen && result.result.terminal.source === undefined) {
-      throw new RuntimeClientError(
-        'incompatible_runtime',
-        'This Orca host does not support --screen reads, so it answered with accumulated output instead of the rendered screen. Update Orca on the host, or drop --screen to read accumulated output deliberately.'
-      )
-    }
+    rejectUnsupportedScreenRead(screen, result.result.terminal.source)
     printResult(result, json, formatTerminalRead)
   },
   // The read verb an agent reaches for: no cursor bookkeeping, one string back.
@@ -123,15 +129,7 @@ export const TERMINAL_HANDLERS: Record<string, CommandHandler> = {
       tailLines: getOptionalPositiveIntegerFlag(flags, 'tail-lines'),
       ...(screen ? { screen: true } : {})
     })
-    // Why: same as `terminal read` — an older host drops the unknown `screen` param and answers
-    // with its ordinary stream read, which carries no source. `screen-unavailable` already says
-    // so explicitly and keeps its own warning; only a silently absent source must be refused.
-    if (screen && result.result.history.source === undefined) {
-      throw new RuntimeClientError(
-        'incompatible_runtime',
-        'This Orca host does not support --screen reads, so it answered with accumulated output instead of the rendered screen. Update Orca on the host, or drop --screen to read accumulated output deliberately.'
-      )
-    }
+    rejectUnsupportedScreenRead(screen, result.result.history.source)
     printResult(result, json, formatTerminalHistory)
   },
   'terminal send': terminalSendHandler,
