@@ -14,21 +14,45 @@ export const ARTIFACT_RGB = '0,128,255'
  *
  * The component is imported rather than reimplemented, and `resolveExtensions` puts `.web.tsx` first
  * so this is the file the bundle ships. `renderSource` is a marker the Source case looks for.
+ *
+ * Wrapped in the page's own provider because the preview asks the shell what it may do
+ * (`use-html-preview-link-grant.web.ts` reads `init.grants.native`), and `usePageBridgeClient`
+ * throws outside one. The client is the two members that read is made of and nothing else: a fuller
+ * fake would be a second implementation of the bridge, and what an arm needs to vary is the grant
+ * list. `grants` defaults to carrying `externalNavigation`, which is what the session route
+ * declares, so an arm that does not mention it measures the shipped screen.
  */
 export const ENTRY_SOURCE = `
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Text } from 'react-native'
-import { MobileHtmlPreview, MOBILE_HTML_PREVIEW_SANDBOX } from './MobileHtmlPreview'
+import { RpcClientProvider } from '../transport/client-context.web'
+import {
+  MobileHtmlPreview,
+  MOBILE_HTML_PREVIEW_SANDBOX,
+  MOBILE_HTML_PREVIEW_SEALED_SANDBOX
+} from './MobileHtmlPreview'
 
 window.__sandbox = MOBILE_HTML_PREVIEW_SANDBOX
-window.__mount = (html, sandboxOverride) => {
+window.__sealedSandbox = MOBILE_HTML_PREVIEW_SEALED_SANDBOX
+window.__mount = (html, sandboxOverride, grants) => {
   const host = document.getElementById('root')
+  const native = grants ?? ['navigate', 'storage', 'externalNavigation']
+  window.__grants = native
+  const client = {
+    getShellSession: () => ({ grants: { native } }),
+    getState: () => 'connected',
+    onStateChange: () => () => {}
+  }
   createRoot(host).render(
-    createElement(MobileHtmlPreview, {
-      html,
-      renderSource: () => createElement(Text, null, 'SOURCE_TAB_RENDERED')
-    })
+    createElement(
+      RpcClientProvider,
+      { client },
+      createElement(MobileHtmlPreview, {
+        html,
+        renderSource: () => createElement(Text, null, 'SOURCE_TAB_RENDERED')
+      })
+    )
   )
   // A control arm needs a frame the product would never build -- one with allow-scripts -- so that
   // "the script did not run" can be told apart from "the fixture has no script". Built here rather

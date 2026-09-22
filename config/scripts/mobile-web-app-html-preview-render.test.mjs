@@ -23,7 +23,6 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import * as esbuild from 'esbuild'
-import { PNG } from 'pngjs'
 import { chromium, webkit } from 'playwright-core'
 import { lucideBarrelPlugin } from './build-mobile-web-app-bundle.mjs'
 import { mobileWebAppDependenciesPresent } from './mobile-web-app-bundle-dependencies.mjs'
@@ -32,10 +31,15 @@ import {
   readShellCsp,
   readShellDocumentHeaders
 } from './mobile-web-app-render-harness.mjs'
-import { createCspReportSink, reportedDirectives } from './mobile-web-app-preview-csp-reports.mjs'
+import { createCspReportSink } from './mobile-web-app-preview-csp-reports.mjs'
 import { recordRequestsTo } from './mobile-web-app-preview-request-log.mjs'
 import { startArtifactAssetServer } from './mobile-web-app-preview-asset-server.mjs'
 import { watchImageEvidence } from './mobile-web-app-preview-image-evidence.mjs'
+import {
+  probePreviewPixel,
+  readPreviewArm,
+  readPreviewToggles
+} from './mobile-web-app-preview-frame-readings.mjs'
 import {
   ARTIFACT_RGB,
   ENTRY_SOURCE,
@@ -232,6 +236,9 @@ async function open(
     frameReady = 'artifact',
     assets,
     reportReady = null,
+    /** What the shell told this page it may do. Defaults to the session route's own list, so an arm
+     *  that does not mention it measures the shipped screen (C8.1). */
+    grants = null,
     signal
   } = {}
 ) {
@@ -327,10 +334,11 @@ async function open(
     await page.route(`${origin}/**`, record)
     // `sandbox` undefined is the product's own token, which is what every non-control case runs.
     await page.evaluate(
-      ([html, override]) => window.__mount(html, override),
+      ([html, override, granted]) => window.__mount(html, override, granted),
       [
         artifact({ links: foreignOrigin, assets: assets ?? foreignOrigin, extra, nonce }),
-        sandbox ?? null
+        sandbox ?? null,
+        grants
       ]
     )
     // Named in every diagnostic, because the log shows the case and not which of its arms spoke.
@@ -355,18 +363,9 @@ async function open(
     // produced, and by then the top frame is mid-navigation and the iframe has blanked to its own
     // background. So the precondition "there was a rendered artifact to tap" is this reading, and the
     // one below is only meaningful for a case that did nothing.
-    const pixelBefore = await probePixel(page)
-    const readToggles = async () =>
-      await page
-        .evaluate(() =>
-          [...document.querySelectorAll('[role="tab"]')].map((one) => ({
-            label: one.getAttribute('aria-label'),
-            selected: one.getAttribute('aria-selected')
-          }))
-        )
-        .catch(() => null)
+    const pixelBefore = await probePreviewPixel(page, FRAME_PROBE)
     // Sampled before the action as well, because the toggle's whole claim is that it changes.
-    const togglesBefore = await readToggles()
+    const togglesBefore = await readPreviewToggles(page)
     let actError = null
     if (act) {
       // Recorded, never swallowed: a click that never landed and a click that produced no
@@ -384,90 +383,21 @@ async function open(
       arm,
       describeRequests
     })
-    const result = {
+    const result = await readPreviewArm({
       page,
+      clip: FRAME_PROBE,
       pixelBefore,
-      pixel: await probePixel(page),
-      declaredSandbox: await page.evaluate(() => window.__sandbox),
-      // What the toolbar emits into the DOM, not what the component was handed: react-native-web
-      // forwards `aria-*` and drops `accessibilityState` on the floor, so a selected state that reads
-      // fine in the test renderer can reach a screen reader as nothing at all.
       togglesBefore,
-      toggles: await readToggles(),
-      // The attribute on the element the component actually rendered, not the constant it exports: a
-      // literal in the JSX would leave the constant correct and the frame unsealed, which is what the
-      // control run for this file did before this reading existed.
-      mountedSandbox: await page
-        .evaluate(() => document.querySelector('iframe')?.getAttribute('sandbox') ?? null)
-        .catch(() => null),
-      frameCount: page.frames().length - 1,
-      // Reported so a pixel that read the page instead of the frame names the layout rather than
-      // looking like a frame that refused to load.
-      frameBox: await page
-        .evaluate(() => {
-          const frame = document.querySelector('iframe')
-          if (!frame) {
-            return null
-          }
-          const box = frame.getBoundingClientRect()
-          return { x: box.x, y: box.y, width: box.width, height: box.height }
-        })
-        .catch(() => null),
-      // Reported, never asserted on: a `srcdoc` frame's URL reads `about:srcdoc` here and empty on
-      // CI's browser, so nothing may be decided by it.
-      frameUrl: previewFrame(page)?.url() ?? null,
-      // The element's own attributes, which is where "the artifact is parsed inside the frame rather
-      // than fetched into it" actually lives.
-      mountedSrcDoc: await page
-        .evaluate(() => document.querySelector('iframe')?.getAttribute('srcdoc') ?? null)
-        .catch(() => null),
-      mountedSrc: await page
-        .evaluate(() => document.querySelector('iframe')?.getAttribute('src') ?? null)
-        .catch(() => null),
-      inside: await (previewFrame(page)
-        ?.evaluate(() => ({
-          marker: document.getElementById('marker')?.textContent ?? null,
-          title: document.title,
-          ran: document.documentElement.dataset.ran === '1' ? 1 : 0,
-          threw: document.documentElement.dataset.threw ?? null,
-          // The two moments the late-listener question turns on: when the page's init script ran in
-          // this frame, and when the artifact's own script did.
-          initAt: window.__initAt ?? null,
-          artifactAt: document.documentElement.dataset.artifactAt ?? null,
-          // The frame's own list, not the embedder's: `securitypolicyviolation` does not cross frames,
-          // and the page's init script installs the same collector in every one.
-          violations: window.__violations ?? null
-        }))
-        .catch(() => null) ?? Promise.resolve(null)),
-      // What this document was actually served, so "the shipped policy, plus a report endpoint and
-      // nothing else" is asserted rather than intended.
       servedCsp,
-      // Every refusal the browser reported for this arm, which is the evidence an in-frame listener
-      // cannot be relied on to have collected.
-      reported: reportedDirectives(cspReports, nonce),
-      // Null on every arm that acted successfully, and on every arm that did not act at all.
       actError,
-      topNavigations: navigations.filter((one) => one.main && one.foreign).length,
-      ownOriginTopNavigations: navigations.filter((one) => one.main && !one.foreign).length,
-      // What the frame asked for itself at the embedder's origin, which is a different escape from a
-      // top-frame request and is refused by a different line of the policy.
-      ownOriginFrameNavigations: navigations.filter((one) => !one.main && !one.foreign).length,
-      popups: popups.length,
-      // This arm's fetches only, by nonce: the paths, with the nonce stripped, so a case reads the
-      // subresource rather than the bookkeeping.
-      foreignHits: foreignHits
-        .filter((one) => one.includes(`n=${nonce}`))
-        .map((one) => one.split('?')[0]),
-      // Same shape as `foreignHits` and read the same way: this arm's requests only, by nonce, as
-      // paths. Absolute URLs go in, so the origin is stripped along with the query.
-      secureHits: readImageHits(),
-      // What each admitted request carried, this arm's only, so an absence is this artifact's.
-      // Read off the header the listener received rather than off a request object handed to a
-      // route: the header on the wire is what the shell's `Referrer-Policy` is about.
-      secureReferers: assetServer.referersFor(nonce),
-      violations: await page.evaluate(() => window.__violations),
-      body: await page.evaluate(() => document.body.innerText)
-    }
+      navigations,
+      popups,
+      foreignHits,
+      readImageHits,
+      assetServer,
+      cspReports,
+      nonce
+    })
     return result
   } finally {
     // The context and not just the page: an arm whose wait aborted still owns one, and the case
@@ -680,6 +610,92 @@ for (const engine of ['chromium', 'webkit']) {
         expect(empty.topNavigations).toBe(0)
       }, 180_000)
 
+      /**
+       * The hide path C8.1 exists for (ruling 37.2), against the same rig that measures the open one.
+       *
+       * A shell built before the cancelled-navigation event drops a tapped link in silence, so the
+       * page asks first and renders the artifact's links as text when the answer is no. The ruling
+       * names three readings and all three are taken: no underline, no pointer cursor, no anchor a
+       * tap does nothing on. The granted arm is each one's presence precondition -- without it,
+       * "no underline" is also what a frame that never rendered reports.
+       */
+      it('renders an artifact link as text against a shell that cannot open one', async (ctx) => {
+        const hidden = await open(browser(), {
+          signal: ctx.signal,
+          grants: ['navigate', 'storage'],
+          act: async ({ frame }) => {
+            // The same tap the granted arm makes. It is expected to produce nothing, so the arm
+            // does not wait for a navigation -- `settleAfterMount` still drives the turn.
+            await frame?.click('#toplink', { timeout: 2000 })
+          }
+        })
+        // The artifact is there and painted, so what follows is a hidden affordance on a complete
+        // screen rather than a frame that failed to load.
+        expect(hidden.grants).not.toContain('externalNavigation')
+        expect(hidden.pixelBefore).toBe(ARTIFACT_RGB)
+        expect(hidden.frameCount).toBe(1)
+        expect(hidden.inside?.marker).toBe('ARTIFACT_RENDERED')
+        // The toggle is still a toggle: this is the whole of "the screen that remains is complete".
+        expect(hidden.toggles?.map((one) => one.selected)).toEqual(['true', 'false'])
+        // No anchor: the element and its text survive, the link does not.
+        expect(hidden.links?.linked).toBe(0)
+        expect(hidden.links?.anchors).toBe(4)
+        expect(hidden.links?.text).toBe('tap')
+        // No underline, as the browser resolves it, and not in the tab order either.
+        expect(hidden.links?.decoration).toBe('none')
+        expect(hidden.links?.focusable).toBe(false)
+        // And the tap does nothing, which is the behaviour the affordance was advertising.
+        expect(hidden.topNavigations).toBe(0)
+        expect(hidden.ownOriginTopNavigations).toBe(0)
+        expect(hidden.popups).toBe(0)
+        // The second fence: the browsing context cannot navigate the top frame either, so a link
+        // this pass somehow missed is refused by the sandbox as well.
+        expect(hidden.mountedSandbox).toBe('')
+
+        // Every reading above against the granted arm, which is the shipped screen. Two arms,
+        // because a tap costs the readings: the top frame goes mid-navigation and the computed
+        // style of an element in a blanking frame reads as the initial value, which is what this
+        // arm measured before it was split. So the affordance is read without a tap and the tap's
+        // outcome is read on its own -- the split the `pixelBefore` sampling above exists for.
+        const shown = await open(browser(), { signal: ctx.signal })
+        expect(shown.grants).toContain('externalNavigation')
+        expect(shown.pixel).toBe(ARTIFACT_RGB)
+        expect(shown.links?.linked).toBe(4)
+        expect(shown.links?.anchors).toBe(4)
+        expect(shown.links?.text).toBe('tap')
+        expect(shown.links?.decoration).toBe('underline')
+        expect(shown.links?.focusable).toBe(true)
+        /**
+         * The pointer cursor, asserted only on the engine that reports one.
+         *
+         * Measured here: WebKit computes `cursor: auto` for an `<a href>` as well as for an anchor
+         * without one -- it resolves the link cursor at hit test rather than into the computed
+         * style -- so on that engine the reading cannot tell the two apart. Asserting "not pointer"
+         * on the hidden arm there would be a zero with no presence precondition behind it, so this
+         * pins the discrimination where it exists and pins the blindness where it does not. The
+         * underline, the missing anchor and the tap carry the case on WebKit.
+         */
+        if (engine === 'chromium') {
+          expect(shown.links?.cursor).toBe('pointer')
+          expect(hidden.links?.cursor).not.toBe('pointer')
+        } else {
+          expect(shown.links?.cursor).toBe(hidden.links?.cursor)
+        }
+        expect(shown.mountedSandbox).toBe('allow-top-navigation-by-user-activation')
+
+        // And the tap that affordance advertises does reach the top frame, which is what makes the
+        // hidden arm's zero above a hidden capability rather than a rig that cannot see a tap.
+        const tapped = await open(browser(), {
+          signal: ctx.signal,
+          expectNavigation: 'main-frame',
+          act: async ({ frame }) => {
+            await frame?.click('#toplink', { timeout: 2000 })
+          }
+        })
+        expect(tapped.pixelBefore).toBe(ARTIFACT_RGB)
+        expect(tapped.topNavigations).toBe(1)
+      }, 240_000)
+
       it("hands a user's tap on a link to the top frame, exactly once", async (ctx) => {
         const read = await open(browser(), {
           signal: ctx.signal,
@@ -867,11 +883,6 @@ describe('the HTML preview needs no policy change', () => {
 })
 
 /** One pixel of the frame's own fill, which is what says the artifact parsed and painted. */
-async function probePixel(page) {
-  const png = PNG.sync.read(await page.screenshot({ clip: FRAME_PROBE }))
-  return `${png.data[0]},${png.data[1]},${png.data[2]}`
-}
-
 async function readFileText(relativePath) {
   const { readFile } = await import('node:fs/promises')
   return await readFile(join(mobileDir, '..', relativePath), 'utf8')

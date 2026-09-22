@@ -88,7 +88,10 @@ const EXPECTED_PAGE_ROUTES = [
       'native.audio.start',
       'native.audio.read',
       'native.audio.stop'
-    ]
+    ],
+    // The one optional grant in the list (C8.1): the HTML preview's links, hidden rather than dead
+    // against a shell that cannot open one.
+    optionalGrants: ['externalNavigation']
   }
 ]
 
